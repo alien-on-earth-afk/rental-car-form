@@ -26,6 +26,21 @@ const adminPasswordSchema = z.object({
 // JWT Secret (in production, use environment variable)
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 
+// In-memory store for session tokens (in production, use Redis or database)
+const sessionTokens = new Map<string, { ownerName: string, timestamp: number, used: boolean }>();
+
+// Clean up expired tokens every 15 minutes
+setInterval(() => {
+  const now = Date.now();
+  const fifteenMinutes = 15 * 60 * 1000;
+
+  for (const [token, data] of sessionTokens.entries()) {
+    if (now - data.timestamp > fifteenMinutes || data.used) {
+      sessionTokens.delete(token);
+    }
+  }
+}, 15 * 60 * 1000);
+
 // Rate limiting middleware
 const createRegistrationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -84,7 +99,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const validatedData = insertRegistrationSchema.parse(req.body);
       const registration = await storage.createRegistration(validatedData);
-      res.json({ success: true, data: registration });
+
+       // Generate session token
+       const sessionToken = crypto.randomBytes(32).toString('hex');
+       sessionTokens.set(sessionToken, { 
+         ownerName: validatedData.ownerName, 
+         timestamp: Date.now(), 
+         used: false 
+       });
+
+      res.json({ success: true, data: registration, sessionToken });
     } catch (error) {
       if (error instanceof z.ZodError) {
         res.status(400).json({ 
@@ -101,14 +125,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+    // Session token validation for results page access
+  app.post("/api/validate-session", createRegistrationLimiter, async (req, res) => {
+    try {
+      const { token } = req.body;
+
+      if (!token || typeof token !== 'string') {
+        return res.status(400).json({ 
+          valid: false, 
+          message: "Token is required" 
+        });
+      }
+
+      const sessionData = sessionTokens.get(token);
+
+      if (!sessionData) {
+        return res.status(401).json({ 
+          valid: false, 
+          message: "Invalid or expired token" 
+        });
+      }
+
+      // Check if token has expired (10 minutes)
+      const tenMinutes = 10 * 60 * 1000;
+      if (Date.now() - sessionData.timestamp > tenMinutes) {
+        sessionTokens.delete(token);
+        return res.status(401).json({ 
+          valid: false, 
+          message: "Token has expired" 
+        });
+      }
+
+      // Check if token has already been used
+      if (sessionData.used) {
+        sessionTokens.delete(token);
+        return res.status(401).json({ 
+          valid: false, 
+          message: "Token already used" 
+        });
+      }
+
+      // Mark token as used (one-time use)
+      sessionData.used = true;
+
+      res.json({ 
+        valid: true, 
+        ownerName: sessionData.ownerName 
+      });
+
+    } catch (error) {
+      res.status(500).json({ 
+        valid: false, 
+        message: "Internal server error" 
+      });
+    }
+  });
+
   // Admin login with enhanced security
   app.post("/api/admin/login", loginLimiter, async (req, res) => {
     try {
       const { password } = adminPasswordSchema.parse(req.body);
-      
+
       // Use environment variable for admin password
       const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin@123@#";
-      
+
       if (password === ADMIN_PASSWORD) {
         // Generate JWT token
         const token = jwt.sign(
@@ -116,7 +196,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           JWT_SECRET,
           { expiresIn: '2h' } // Token expires in 2 hours
         );
-        
+
         res.json({ 
           success: true, 
           message: "Login successful",
@@ -141,9 +221,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = parseInt(req.query.limit as string) || 20;
       const search = req.query.search as string || '';
       const filter = req.query.filter as string || 'all';
-      
+
       const allRegistrations = await storage.getAllRegistrations();
-      
+
       // Apply search and filtering
       let filteredRegistrations = allRegistrations.filter(registration => {
         const matchesSearch = search === '' || 
@@ -194,11 +274,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/analytics", adminLimiter, authenticateToken, async (req, res) => {
     try {
       const registrations = await storage.getAllRegistrations();
-      
+
       const totalRegistrations = registrations.length;
       const cngPowered = registrations.filter(r => r.cngPowered).length;
       const uniqueCars = new Set(registrations.map(r => r.carModel.toLowerCase())).size;
-      
+
       // Only last 7 days for performance
       const last7Days = Array.from({ length: 7 }, (_, i) => {
         const date = new Date();
@@ -252,7 +332,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/download-csv", adminLimiter, authenticateToken, async (req, res) => {
     try {
       const csvFilePath = path.join(process.cwd(), 'data', 'registrations.csv');
-      
+
       if (!fs.existsSync(csvFilePath)) {
         return res.status(404).json({ 
           success: false, 
@@ -262,7 +342,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', 'attachment; filename=registrations.csv');
-      
+
       const fileStream = fs.createReadStream(csvFilePath);
       fileStream.pipe(res);
     } catch (error) {

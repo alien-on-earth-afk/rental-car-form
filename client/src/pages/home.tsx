@@ -2,7 +2,7 @@
 
 import { useForm } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Link } from "wouter"
+import { Link, useLocation } from "wouter"
 import { useMutation } from "@tanstack/react-query"
 import { insertRegistrationSchema, type InsertRegistration } from "@shared/schema"
 import { apiRequest } from "@/lib/queryClient"
@@ -276,12 +276,12 @@ const VehicleSection = memo(function VehicleSection({
             className="flex space-x-6 pt-2"
           >
             <div className="flex items-center space-x-2 p-2 rounded-lg border-2 border-transparent hover:border-gray-200 transition-colors">
-              <RadioGroupItem value="true" />
-              <Label className="cursor-pointer">Yes (CNG)</Label>
+              <RadioGroupItem value="true" id="cng-yes" />
+              <Label htmlFor="cng-yes" className="cursor-pointer">Yes (CNG)</Label>
             </div>
             <div className="flex items-center space-x-2 p-2 rounded-lg border-2 border-transparent hover:border-gray-200 transition-colors">
-              <RadioGroupItem value="false" />
-              <Label className="cursor-pointer">No (Petrol/Diesel)</Label>
+              <RadioGroupItem value="false" id="cng-no" />
+              <Label htmlFor="cng-no" className="cursor-pointer">No (Petrol/Diesel)</Label>
             </div>
           </RadioGroup>
           {errors.cngPowered && (
@@ -382,6 +382,7 @@ const DriverSection = memo(function DriverSection({
 // Main Home Component with all optimizations
 function HomeContent() {
   const { toast } = useToast()
+  const [location, setLocation] = useLocation()
   const [formProgress, setFormProgress] = useState(0)
   const [completedFields, setCompletedFields] = useState(new Set<string>())
 
@@ -477,11 +478,26 @@ function HomeContent() {
       const response = await apiRequest("POST", "/api/registrations", data)
       return response.json()
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
       toast({
         title: "Success!",
         description: "Registration submitted successfully!",
       })
+      
+      // Create a secure session token for results page access
+      const sessionToken = data.sessionToken
+      const ownerName = variables.ownerName
+      
+      // Store session data securely (expires in 10 minutes)
+      sessionStorage.setItem("registrationSession", JSON.stringify({
+        token: sessionToken,
+        ownerName: ownerName,
+        timestamp: Date.now(),
+        expires: Date.now() + (10 * 60 * 1000) // 10 minutes
+      }))
+      
+      // Redirect to results page with secure token
+      setLocation(`/results?token=${sessionToken}`)
       reset()
     },
     onError: (error) => {
