@@ -8,7 +8,7 @@ import * as path from "path";
 import rateLimit from "express-rate-limit";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
-
+import bcrypt from "bcrypt";
 
 // Extend Express Request type to include user
 declare global {
@@ -26,6 +26,24 @@ const adminPasswordSchema = z.object({
 // JWT Secret (in production, use environment variable)
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 
+// Hashed admin password (default password: admin@123@#)
+// In production, this should be set via environment variable
+const DEFAULT_ADMIN_PASSWORD_HASH = '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeO4LKE.ttHZ7cz3u'; // admin@123@#
+
+async function getAdminPasswordHash(): Promise<string> {
+  const envPassword = process.env.ADMIN_PASSWORD;
+  if (envPassword) {
+    // If environment password is provided, hash it
+    return await bcrypt.hash(envPassword, 12);
+  }
+  return DEFAULT_ADMIN_PASSWORD_HASH;
+}
+
+// Utility function to generate password hash (for development/testing)
+export async function generatePasswordHash(password: string): Promise<string> {
+  return await bcrypt.hash(password, 12);
+}
+
 // In-memory store for session tokens (in production, use Redis or database)
 const sessionTokens = new Map<string, { ownerName: string, timestamp: number, used: boolean }>();
 
@@ -34,11 +52,11 @@ setInterval(() => {
   const now = Date.now();
   const fifteenMinutes = 15 * 60 * 1000;
 
-  for (const [token, data] of sessionTokens.entries()) {
+  sessionTokens.forEach((data, token) => {
     if (now - data.timestamp > fifteenMinutes || data.used) {
       sessionTokens.delete(token);
     }
-  }
+  });
 }, 15 * 60 * 1000);
 
 // Rate limiting middleware
@@ -100,13 +118,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const validatedData = insertRegistrationSchema.parse(req.body);
       const registration = await storage.createRegistration(validatedData);
 
-       // Generate session token
-       const sessionToken = crypto.randomBytes(32).toString('hex');
-       sessionTokens.set(sessionToken, { 
-         ownerName: validatedData.ownerName, 
-         timestamp: Date.now(), 
-         used: false 
-       });
+      // Generate session token
+      const sessionToken = crypto.randomBytes(32).toString('hex');
+      sessionTokens.set(sessionToken, { 
+        ownerName: validatedData.ownerName, 
+        timestamp: Date.now(), 
+        used: false 
+      });
 
       res.json({ success: true, data: registration, sessionToken });
     } catch (error) {
@@ -125,7 +143,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-    // Session token validation for results page access
+  // Session token validation for results page access
   app.post("/api/validate-session", createRegistrationLimiter, async (req, res) => {
     try {
       const { token } = req.body;
@@ -185,18 +203,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/admin/login", loginLimiter, async (req, res) => {
     try {
       const { password } = adminPasswordSchema.parse(req.body);
-
-      // Use environment variable for admin password
-      const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "admin@123@#";
-
-      if (password === ADMIN_PASSWORD) {
+      
+      // Get the hashed admin password
+      const adminPasswordHash = await getAdminPasswordHash();
+      
+      // Compare the provided password with the hashed password
+      const isValidPassword = await bcrypt.compare(password, adminPasswordHash);
+      
+      if (isValidPassword) {
         // Generate JWT token
         const token = jwt.sign(
           { role: 'admin', timestamp: Date.now() },
           JWT_SECRET,
           { expiresIn: '2h' } // Token expires in 2 hours
         );
-
+        
         res.json({ 
           success: true, 
           message: "Login successful",
@@ -207,9 +228,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         res.status(401).json({ success: false, message: "Invalid password" });
       }
     } catch (error) {
-      res.status(400).json({ 
+      console.error('Admin login error:', error);
+      res.status(500).json({ 
         success: false, 
-        message: "Invalid request format" 
+        message: "Internal server error" 
       });
     }
   });
@@ -221,9 +243,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const limit = parseInt(req.query.limit as string) || 20;
       const search = req.query.search as string || '';
       const filter = req.query.filter as string || 'all';
-
+      
       const allRegistrations = await storage.getAllRegistrations();
-
+      
       // Apply search and filtering
       let filteredRegistrations = allRegistrations.filter(registration => {
         const matchesSearch = search === '' || 
@@ -274,11 +296,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/analytics", adminLimiter, authenticateToken, async (req, res) => {
     try {
       const registrations = await storage.getAllRegistrations();
-
+      
       const totalRegistrations = registrations.length;
       const cngPowered = registrations.filter(r => r.cngPowered).length;
       const uniqueCars = new Set(registrations.map(r => r.carModel.toLowerCase())).size;
-
+      
       // Only last 7 days for performance
       const last7Days = Array.from({ length: 7 }, (_, i) => {
         const date = new Date();
@@ -331,24 +353,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Download CSV file (admin only)
   app.get("/api/download-csv", adminLimiter, authenticateToken, async (req, res) => {
     try {
-      const csvFilePath = path.join(process.cwd(), 'data', 'registrations.csv');
-
-      if (!fs.existsSync(csvFilePath)) {
-        return res.status(404).json({ 
-          success: false, 
-          message: "CSV file not found" 
-        });
-      }
-
+      const csvData = await storage.exportToCsv();
+      
       res.setHeader('Content-Type', 'text/csv');
       res.setHeader('Content-Disposition', 'attachment; filename=registrations.csv');
-
-      const fileStream = fs.createReadStream(csvFilePath);
-      fileStream.pipe(res);
+      
+      res.send(csvData);
     } catch (error) {
       res.status(500).json({ 
         success: false, 
-        message: "Error downloading CSV file" 
+        message: "Error generating CSV file" 
       });
     }
   });
