@@ -1,5 +1,5 @@
 
-const bcrypt = require('bcrypt');
+import bcrypt from 'bcrypt';
 
 if (process.argv.length < 3) {
   console.log('Usage: node scripts/hash-password.js <password>');

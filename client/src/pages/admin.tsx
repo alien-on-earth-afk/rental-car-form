@@ -7,7 +7,7 @@ import { Link } from "wouter"
 import { useQuery, useMutation } from "@tanstack/react-query"
 import { apiRequest } from "@/lib/queryClient"
 import { useToast } from "@/hooks/use-toast"
-import type { Registration } from "@shared/schema"
+import type { Registration, RideRequest } from "@shared/schema"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -92,6 +92,64 @@ const MobileRegistrationCard = ({ registration }: { registration: Registration }
   </Card>
 )
 
+// Mobile Ride Request Card Component
+const MobileRideRequestCard = ({ rideRequest }: { rideRequest: RideRequest }) => (
+  <Card className="mb-4">
+    <CardContent className="p-4">
+      <div className="space-y-3">
+        <div className="flex justify-between items-start">
+          <div>
+            <h3 className="font-semibold text-lg">{rideRequest.passengerName}</h3>
+            <p className="text-sm text-gray-600">{rideRequest.passengerContact}</p>
+          </div>
+          <Badge variant={rideRequest.prefersCNG ? "default" : "secondary"}>
+            {rideRequest.prefersCNG ? "Prefers CNG" : "Any Vehicle"}
+          </Badge>
+        </div>
+
+        <div className="space-y-2 text-sm">
+          <div>
+            <span className="text-gray-500">From:</span>
+            <p className="font-medium">{rideRequest.pickupLocation}</p>
+          </div>
+          <div>
+            <span className="text-gray-500">To:</span>
+            <p className="font-medium">{rideRequest.dropoffLocation}</p>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <span className="text-gray-500">Date:</span>
+              <p className="font-medium">{rideRequest.rideDate}</p>
+            </div>
+            <div>
+              <span className="text-gray-500">Time:</span>
+              <p className="font-medium">{rideRequest.rideTime}</p>
+            </div>
+          </div>
+          <div>
+            <span className="text-gray-500">Passengers:</span>
+            <p className="font-medium">{rideRequest.passengers}</p>
+          </div>
+          {rideRequest.specialRequests && (
+            <div>
+              <span className="text-gray-500">Special Requests:</span>
+              <p className="font-medium text-xs">{rideRequest.specialRequests}</p>
+            </div>
+          )}
+        </div>
+
+        <div className="pt-2 border-t text-xs text-gray-500">
+          {new Date(rideRequest.createdAt).toLocaleDateString()} at{" "}
+          {new Date(rideRequest.createdAt).toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          })}
+        </div>
+      </div>
+    </CardContent>
+  </Card>
+)
+
 export default function Admin() {
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [authToken, setAuthToken] = useState<string | null>(null)
@@ -103,6 +161,7 @@ export default function Admin() {
   const [currentPage, setCurrentPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
+  const [activeTab, setActiveTab] = useState<"registrations" | "ride-requests">("registrations")
   const { toast } = useToast()
 
   // Debounced search for better performance
@@ -214,11 +273,75 @@ export default function Admin() {
     staleTime: 1000 * 60 * 2, // 2 minutes cache for analytics
   })
 
+  // Unified ride requests query using the same pattern as registrations
+  const { data: rideRequestsData, isLoading: rideRequestsLoading } = useQuery<{
+    success: boolean
+    data: RideRequest[]
+    total: number
+    page: number
+    totalPages: number
+  }>({
+    queryKey: ["/api/ride-requests", currentPage, pageSize, debouncedSearchTerm, filterBy, sortBy],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        limit: pageSize.toString(),
+        search: debouncedSearchTerm,
+        filter: filterBy,
+        sortBy,
+      })
+
+      const response = await fetch(`/api/ride-requests?${params}`, {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "Content-Type": "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          // Token expired, clear auth state
+          setIsAuthenticated(false)
+          setAuthToken(null)
+          localStorage.removeItem("admin_token")
+          localStorage.removeItem("token_expiry")
+          throw new Error("Authentication failed")
+        }
+        throw new Error("Failed to fetch ride requests")
+      }
+
+      return response.json()
+    },
+    enabled: isAuthenticated && !!authToken && activeTab === "ride-requests",
+    staleTime: 1000 * 60 * 5, // 5 minutes cache
+    gcTime: 1000 * 60 * 10, // 10 minutes garbage collection
+  })
+
+  // Ride analytics query
+  const { data: rideAnalyticsData } = useQuery<{ success: boolean; data: any }>({
+    queryKey: ["/api/ride-analytics"],
+    queryFn: async () => {
+      const response = await fetch("/api/ride-analytics", {
+        headers: {
+          Authorization: `Bearer ${authToken}`,
+          "Content-Type": "application/json",
+        },
+      })
+
+      if (!response.ok) throw new Error("Failed to fetch ride analytics")
+      return response.json()
+    },
+    enabled: isAuthenticated && !!authToken && activeTab === "ride-requests",
+    staleTime: 1000 * 60 * 2, // 2 minutes cache for analytics
+  })
+
   const registrations = registrationsData?.data || []
-  const totalPages = registrationsData?.totalPages || 1
+  const rideRequests = rideRequestsData?.data || []
+  const totalPages = activeTab === "registrations" ? (registrationsData?.totalPages || 1) : (rideRequestsData?.totalPages || 1)
 
   // Use server-side analytics data
   const analytics = analyticsData?.data || null
+  const rideAnalytics = rideAnalyticsData?.data || null
 
   // Reset to first page when search/filter changes
   useEffect(() => {
@@ -244,7 +367,8 @@ export default function Admin() {
 
   const handleDownloadCSV = async () => {
     try {
-      const response = await fetch("/api/download-csv", {
+      const type = activeTab === "registrations" ? "registrations" : "ride-requests"
+      const response = await fetch(`/api/download-csv?type=${type}`, {
         headers: {
           Authorization: `Bearer ${authToken}`,
         },
@@ -258,7 +382,7 @@ export default function Admin() {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = `registrations_${new Date().toISOString().split("T")[0]}.csv`
+      a.download = `${type.replace('-', '_')}_${new Date().toISOString().split("T")[0]}.csv`
       document.body.appendChild(a)
       a.click()
       window.URL.revokeObjectURL(url)
@@ -403,89 +527,172 @@ export default function Admin() {
           {/* Admin Header */}
           <Card className="mb-6 sm:mb-8">
             <CardContent className="p-4 sm:p-6">
-              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center space-y-4 sm:space-y-0">
-                <div>
-                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Admin Dashboard</h2>
-                  <p className="text-gray-600 mt-1 text-sm sm:text-base">Manage vehicle registrations</p>
-                </div>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-3 sm:space-y-0 sm:space-x-4">
-                  <span className="text-sm text-gray-500">
-                    Total Records: <span className="font-semibold text-blue-600">{registrations.length}</span>
-                  </span>
-                  <div className="flex space-x-2 w-full sm:w-auto">
-                    <Button
-                      onClick={handleDownloadCSV}
-                      variant="outline"
-                      size="sm"
-                      className="flex-1 sm:flex-none text-green-600 border-green-600 hover:bg-green-50 bg-transparent"
-                    >
-                      <Download className="h-4 w-4 sm:mr-2" />
-                      <span className="hidden sm:inline">Download CSV</span>
-                    </Button>
-                    <Button onClick={handleLogout} variant="destructive" size="sm" className="sm:hidden">
-                      Logout
-                    </Button>
+              <div className="flex flex-col space-y-4">
+                <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center space-y-4 sm:space-y-0">
+                  <div>
+                    <h2 className="text-xl sm:text-2xl font-bold text-gray-900">Admin Dashboard</h2>
+                    <p className="text-gray-600 mt-1 text-sm sm:text-base">Manage vehicle registrations and ride requests</p>
                   </div>
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center space-y-3 sm:space-y-0 sm:space-x-4">
+                    <span className="text-sm text-gray-500">
+                      Total Records: <span className="font-semibold text-blue-600">
+                        {activeTab === "registrations" ? registrations.length : rideRequests.length}
+                      </span>
+                    </span>
+                    <div className="flex space-x-2 w-full sm:w-auto">
+                      <Button
+                        onClick={handleDownloadCSV}
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 sm:flex-none text-green-600 border-green-600 hover:bg-green-50 bg-transparent"
+                      >
+                        <Download className="h-4 w-4 sm:mr-2" />
+                        <span className="hidden sm:inline">Download CSV</span>
+                      </Button>
+                      <Button onClick={handleLogout} variant="destructive" size="sm" className="sm:hidden">
+                        Logout
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tab Navigation */}
+                <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+                  <Button
+                    onClick={() => setActiveTab("registrations")}
+                    variant={activeTab === "registrations" ? "default" : "ghost"}
+                    size="sm"
+                    className="flex-1 sm:flex-none"
+                  >
+                    <Car className="h-4 w-4 mr-2" />
+                    Car Rentals ({analytics?.totalRegistrations || 0})
+                  </Button>
+                  <Button
+                    onClick={() => setActiveTab("ride-requests")}
+                    variant={activeTab === "ride-requests" ? "default" : "ghost"}
+                    size="sm"
+                    className="flex-1 sm:flex-none"
+                  >
+                    <Users className="h-4 w-4 mr-2" />
+                    Ride Requests ({rideAnalytics?.totalRideRequests || 0})
+                  </Button>
                 </div>
               </div>
             </CardContent>
           </Card>
 
           {/* Analytics Dashboard */}
-          {analytics && (
+          {((activeTab === "registrations" && analytics) || (activeTab === "ride-requests" && rideAnalytics)) && (
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-6 mb-6 sm:mb-8">
-              <Card>
-                <CardContent className="p-4 sm:p-6">
-                  <div className="flex items-center">
-                    <Users className="h-6 w-6 sm:h-8 sm:w-8 text-blue-600" />
-                    <div className="ml-2 sm:ml-4">
-                      <p className="text-xs sm:text-sm font-medium text-gray-600">Total Registrations</p>
-                      <p className="text-lg sm:text-2xl font-bold text-gray-900">{analytics.totalRegistrations}</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+              {activeTab === "registrations" && analytics ? (
+                <>
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <Users className="h-6 w-6 sm:h-8 sm:w-8 text-blue-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">Total Registrations</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">{analytics.totalRegistrations}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
 
-              <Card>
-                <CardContent className="p-4 sm:p-6">
-                  <div className="flex items-center">
-                    <Car className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
-                    <div className="ml-2 sm:ml-4">
-                      <p className="text-xs sm:text-sm font-medium text-gray-600">CNG Powered</p>
-                      <p className="text-lg sm:text-2xl font-bold text-gray-900">{analytics.cngPowered}</p>
-                      <p className="text-xs text-gray-500">
-                        {Math.round((analytics.cngPowered / analytics.totalRegistrations) * 100)}% of total
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <Car className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">CNG Powered</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">{analytics.cngPowered}</p>
+                          <p className="text-xs text-gray-500">
+                            {Math.round((analytics.cngPowered / analytics.totalRegistrations) * 100)}% of total
+                          </p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
 
-              <Card>
-                <CardContent className="p-4 sm:p-6">
-                  <div className="flex items-center">
-                    <TrendingUp className="h-6 w-6 sm:h-8 sm:w-8 text-purple-600" />
-                    <div className="ml-2 sm:ml-4">
-                      <p className="text-xs sm:text-sm font-medium text-gray-600">Unique Car Models</p>
-                      <p className="text-lg sm:text-2xl font-bold text-gray-900">{analytics.uniqueCars}</p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <TrendingUp className="h-6 w-6 sm:h-8 sm:w-8 text-purple-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">Unique Car Models</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">{analytics.uniqueCars}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
 
-              <Card>
-                <CardContent className="p-4 sm:p-6">
-                  <div className="flex items-center">
-                    <Calendar className="h-6 w-6 sm:h-8 sm:w-8 text-orange-600" />
-                    <div className="ml-2 sm:ml-4">
-                      <p className="text-xs sm:text-sm font-medium text-gray-600">This Week</p>
-                      <p className="text-lg sm:text-2xl font-bold text-gray-900">
-                        {analytics.registrationsByDate.reduce((sum, day) => sum + day.count, 0)}
-                      </p>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <Calendar className="h-6 w-6 sm:h-8 sm:w-8 text-orange-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">This Week</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">
+                            {analytics.registrationsByDate.reduce((sum, day) => sum + day.count, 0)}
+                          </p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </>
+              ) : (
+                <>
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <Users className="h-6 w-6 sm:h-8 sm:w-8 text-blue-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">Total Ride Requests</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">{rideAnalytics?.totalRideRequests}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <Car className="h-6 w-6 sm:h-8 sm:w-8 text-green-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">Prefers CNG</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">{rideAnalytics?.cngPreferred}</p>
+                          <p className="text-xs text-gray-500">
+                            {Math.round((rideAnalytics?.cngPreferred / rideAnalytics?.totalRideRequests) * 100)}% of total
+                          </p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <TrendingUp className="h-6 w-6 sm:h-8 sm:w-8 text-purple-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">Avg Passengers</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">{rideAnalytics?.avgPassengers}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardContent className="p-4 sm:p-6">
+                      <div className="flex items-center">
+                        <Calendar className="h-6 w-6 sm:h-8 sm:w-8 text-orange-600" />
+                        <div className="ml-2 sm:ml-4">
+                          <p className="text-xs sm:text-sm font-medium text-gray-600">Popular Pickups</p>
+                          <p className="text-lg sm:text-2xl font-bold text-gray-900">{rideAnalytics?.popularPickups?.length || 0}</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </>
+              )}
             </div>
           )}
 
@@ -582,70 +789,133 @@ export default function Admin() {
           {/* Data Display */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg sm:text-xl">Registration Records</CardTitle>
+              <CardTitle className="text-lg sm:text-xl">
+                {activeTab === "registrations" ? "Registration Records" : "Ride Request Records"}
+              </CardTitle>
             </CardHeader>
             <CardContent className="p-4 sm:p-6">
-              {isLoading ? (
+              {(activeTab === "registrations" ? isLoading : rideRequestsLoading) ? (
                 <div className="text-center py-8">
-                  <div className="animate-pulse">Loading registrations...</div>
+                  <div className="animate-pulse">
+                    Loading {activeTab === "registrations" ? "registrations" : "ride requests"}...
+                  </div>
                 </div>
-              ) : registrations.length === 0 ? (
+              ) : (activeTab === "registrations" ? registrations.length : rideRequests.length) === 0 ? (
                 <div className="text-center py-8 text-gray-500">
-                  {searchTerm || filterBy !== "all" ? "No matching registrations found" : "No registrations found"}
+                  {searchTerm || filterBy !== "all" 
+                    ? `No matching ${activeTab === "registrations" ? "registrations" : "ride requests"} found` 
+                    : `No ${activeTab === "registrations" ? "registrations" : "ride requests"} found`}
                 </div>
               ) : (
                 <>
                   {/* Mobile View - Card Layout */}
                   <div className="block sm:hidden">
-                    {registrations.map((registration) => (
-                      <MobileRegistrationCard key={registration.id} registration={registration} />
-                    ))}
+                    {activeTab === "registrations" 
+                      ? registrations.map((registration) => (
+                          <MobileRegistrationCard key={registration.id} registration={registration} />
+                        ))
+                      : rideRequests.map((rideRequest) => (
+                          <MobileRideRequestCard key={rideRequest.id} rideRequest={rideRequest} />
+                        ))
+                    }
                   </div>
 
                   {/* Desktop View - Table Layout */}
                   <div className="hidden sm:block overflow-x-auto">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Owner Name</TableHead>
-                          <TableHead>Owner Contact</TableHead>
-                          <TableHead>Car Model</TableHead>
-                          <TableHead>Registration</TableHead>
-                          <TableHead>Seats</TableHead>
-                          <TableHead>CNG</TableHead>
-                          <TableHead>Driver Name</TableHead>
-                          <TableHead>Driver Contact</TableHead>
-                          <TableHead>Date</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {registrations.map((registration) => (
-                          <TableRow key={registration.id} className="hover:bg-gray-50">
-                            <TableCell className="font-medium">{registration.ownerName}</TableCell>
-                            <TableCell>{registration.ownerContact}</TableCell>
-                            <TableCell>{registration.carModel}</TableCell>
-                            <TableCell>{registration.regNumber || "N/A"}</TableCell>
-                            <TableCell>
-                              <Badge variant="outline">{registration.seats}</Badge>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={registration.cngPowered ? "default" : "secondary"}>
-                                {registration.cngPowered ? "Yes" : "No"}
-                              </Badge>
-                            </TableCell>
-                            <TableCell>{registration.driverName}</TableCell>
-                            <TableCell>{registration.driverContact || "N/A"}</TableCell>
-                            <TableCell className="text-sm text-gray-600">
-                              {new Date(registration.createdAt).toLocaleDateString()} at{" "}
-                              {new Date(registration.createdAt).toLocaleTimeString([], {
-                                hour: "2-digit",
-                                minute: "2-digit",
-                              })}
-                            </TableCell>
+                    {activeTab === "registrations" ? (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Owner Name</TableHead>
+                            <TableHead>Owner Contact</TableHead>
+                            <TableHead>Car Model</TableHead>
+                            <TableHead>Registration</TableHead>
+                            <TableHead>Seats</TableHead>
+                            <TableHead>CNG</TableHead>
+                            <TableHead>Driver Name</TableHead>
+                            <TableHead>Driver Contact</TableHead>
+                            <TableHead>Date</TableHead>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
+                        </TableHeader>
+                        <TableBody>
+                          {registrations.map((registration) => (
+                            <TableRow key={registration.id} className="hover:bg-gray-50">
+                              <TableCell className="font-medium">{registration.ownerName}</TableCell>
+                              <TableCell>{registration.ownerContact}</TableCell>
+                              <TableCell>{registration.carModel}</TableCell>
+                              <TableCell>{registration.regNumber || "N/A"}</TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{registration.seats}</Badge>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={registration.cngPowered ? "default" : "secondary"}>
+                                  {registration.cngPowered ? "Yes" : "No"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>{registration.driverName}</TableCell>
+                              <TableCell>{registration.driverContact || "N/A"}</TableCell>
+                              <TableCell className="text-sm text-gray-600">
+                                {new Date(registration.createdAt).toLocaleDateString()} at{" "}
+                                {new Date(registration.createdAt).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Passenger Name</TableHead>
+                            <TableHead>Contact</TableHead>
+                            <TableHead>From</TableHead>
+                            <TableHead>To</TableHead>
+                            <TableHead>Date & Time</TableHead>
+                            <TableHead>Passengers</TableHead>
+                            <TableHead>CNG Preference</TableHead>
+                            <TableHead>Special Requests</TableHead>
+                            <TableHead>Created</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {rideRequests.map((rideRequest) => (
+                            <TableRow key={rideRequest.id} className="hover:bg-gray-50">
+                              <TableCell className="font-medium">{rideRequest.passengerName}</TableCell>
+                              <TableCell>{rideRequest.passengerContact}</TableCell>
+                              <TableCell className="max-w-32 truncate">{rideRequest.pickupLocation}</TableCell>
+                              <TableCell className="max-w-32 truncate">{rideRequest.dropoffLocation}</TableCell>
+                              <TableCell>
+                                <div className="text-sm">
+                                  <div>{rideRequest.rideDate}</div>
+                                  <div className="text-gray-500">{rideRequest.rideTime}</div>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline">{rideRequest.passengers}</Badge>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={rideRequest.prefersCNG ? "default" : "secondary"}>
+                                  {rideRequest.prefersCNG ? "Yes" : "No"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="max-w-32 truncate">
+                                {rideRequest.specialRequests || "None"}
+                              </TableCell>
+                              <TableCell className="text-sm text-gray-600">
+                                {new Date(rideRequest.createdAt).toLocaleDateString()} at{" "}
+                                {new Date(rideRequest.createdAt).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
                   </div>
 
                   {/* Pagination Controls */}

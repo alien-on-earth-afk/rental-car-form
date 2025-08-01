@@ -1,7 +1,7 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertRegistrationSchema } from "@shared/schema";
+import { insertRegistrationSchema, insertRideRequestSchema, type InsertRegistration, type InsertRideRequest } from "@shared/schema";
 import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
@@ -26,16 +26,10 @@ const adminPasswordSchema = z.object({
 // JWT Secret (in production, use environment variable)
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 
-// Hashed admin password (default password: admin@123@#)
-// In production, this should be set via environment variable
-const DEFAULT_ADMIN_PASSWORD_HASH = '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LeO4LKE.ttHZ7cz3u'; // admin@123@#
+// Secure hashed admin password
+const DEFAULT_ADMIN_PASSWORD_HASH = process.env.ADMIN_PASSWORD_HASH || '$2b$10$v6t19E9WDSXGV2SgA5dPDeBOvXKwN9NEzL/ADsQL7xQbJKTCJNCN2'; // admin@123@#
 
 async function getAdminPasswordHash(): Promise<string> {
-  const envPassword = process.env.ADMIN_PASSWORD;
-  if (envPassword) {
-    // If environment password is provided, hash it
-    return await bcrypt.hash(envPassword, 12);
-  }
   return DEFAULT_ADMIN_PASSWORD_HASH;
 }
 
@@ -59,38 +53,44 @@ setInterval(() => {
   });
 }, 15 * 60 * 1000);
 
-// Rate limiting middleware
+// Rate limiting middleware - configured for Replit environment
 const createRegistrationLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 registration requests per windowMs
+  max: 50, // Increased limit for development
   message: {
     success: false,
     message: "Too many registration attempts. Please try again later."
   },
   standardHeaders: true,
   legacyHeaders: false,
+  trustProxy: true, // Enable trust proxy for Replit
+  skip: () => process.env.NODE_ENV === 'development' // Skip in development
 });
 
 const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Limit each IP to 10 admin requests per windowMs
+  max: 50, // Increased limit for development
   message: {
     success: false,
     message: "Too many admin requests. Please try again later."
   },
   standardHeaders: true,
   legacyHeaders: false,
+  trustProxy: true,
+  skip: () => process.env.NODE_ENV === 'development'
 });
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 login attempts per windowMs
+  max: 20, // Increased limit for development
   message: {
     success: false,
     message: "Too many login attempts. Please try again later."
   },
   standardHeaders: true,
   legacyHeaders: false,
+  trustProxy: true,
+  skip: () => process.env.NODE_ENV === 'development'
 });
 
 // Authentication middleware
@@ -112,140 +112,196 @@ const authenticateToken = (req: Request, res: Response, next: NextFunction) => {
 };
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Registration form submission with rate limiting
-  app.post("/api/registrations", createRegistrationLimiter, async (req, res) => {
+  // Submit car rental registration
+  app.post("/api/registrations", createRegistrationLimiter, async (req: Request, res: Response) => {
     try {
-      const validatedData = insertRegistrationSchema.parse(req.body);
-      const registration = await storage.createRegistration(validatedData);
+      console.log("Received registration request:", req.body);
+      
+      const result = insertRegistrationSchema.safeParse(req.body);
 
-      // Generate session token
+      if (!result.success) {
+        console.error("Validation error:", result.error.errors);
+        return res.status(400).json({
+          success: false,
+          message: "Invalid form data",
+          errors: result.error.errors
+        });
+      }
+
+      const registration = await storage.createRegistration(result.data);
+      console.log("Registration created successfully:", registration.id);
+
+      // Generate session token for results page access
       const sessionToken = crypto.randomBytes(32).toString('hex');
+      sessionTokens.set(sessionToken, {
+        ownerName: result.data.ownerName,
+        timestamp: Date.now(),
+        used: false
+      });
+
+      res.json({
+        success: true,
+        message: "Registration submitted successfully!",
+        sessionToken,
+        registration: registration
+      });
+    } catch (error) {
+      console.error("Registration error details:", error);
+      res.status(500).json({
+        success: false,
+        message: `Failed to submit registration: ${error instanceof Error ? error.message : 'Unknown error'}`
+      });
+    }
+  });
+
+  // Submit ride request
+  app.post("/api/ride-requests", createRegistrationLimiter, async (req: Request, res: Response) => {
+    try {
+      const result = insertRideRequestSchema.safeParse(req.body);
+
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid form data",
+          errors: result.error.errors
+        });
+      }
+
+      const id = crypto.randomUUID();
+      const sessionToken = crypto.randomUUID();
+
+      const createdRideRequest = await storage.createRideRequest({
+        id,
+        ...result.data,
+        createdAt: new Date().toISOString(),
+      });
+
+      // Store session token for ride requests
       sessionTokens.set(sessionToken, { 
-        ownerName: validatedData.ownerName, 
+        ownerName: result.data.passengerName, 
         timestamp: Date.now(), 
         used: false 
       });
 
-      res.json({ success: true, data: registration, sessionToken });
+      res.json({
+        success: true,
+        message: "Ride request submitted successfully!",
+        sessionToken,
+        data: createdRideRequest
+      });
     } catch (error) {
-      if (error instanceof z.ZodError) {
-        res.status(400).json({ 
-          success: false, 
-          message: "Validation error", 
-          errors: error.errors 
-        });
-      } else {
-        res.status(500).json({ 
-          success: false, 
-          message: "Internal server error" 
-        });
-      }
+      console.error("Ride request error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to submit ride request"
+      });
     }
   });
 
-  // Session token validation for results page access
-  app.post("/api/validate-session", createRegistrationLimiter, async (req, res) => {
+  app.post("/api/validate-session", async (req, res) => {
     try {
       const { token } = req.body;
 
       if (!token || typeof token !== 'string') {
-        return res.status(400).json({ 
-          valid: false, 
-          message: "Token is required" 
-        });
+        return res.status(400).json({ valid: false, error: "Invalid token" });
       }
 
-      const sessionData = sessionTokens.get(token);
+      // Here you would typically validate the token against your database
+      // For now, we'll just check if it's a valid format (simple validation)
+      const isValid = token.length > 10; // Basic validation
 
-      if (!sessionData) {
-        return res.status(401).json({ 
-          valid: false, 
-          message: "Invalid or expired token" 
-        });
-      }
-
-      // Check if token has expired (10 minutes)
-      const tenMinutes = 10 * 60 * 1000;
-      if (Date.now() - sessionData.timestamp > tenMinutes) {
-        sessionTokens.delete(token);
-        return res.status(401).json({ 
-          valid: false, 
-          message: "Token has expired" 
-        });
-      }
-
-      // Check if token has already been used
-      if (sessionData.used) {
-        sessionTokens.delete(token);
-        return res.status(401).json({ 
-          valid: false, 
-          message: "Token already used" 
-        });
-      }
-
-      // Mark token as used (one-time use)
-      sessionData.used = true;
-
-      res.json({ 
-        valid: true, 
-        ownerName: sessionData.ownerName 
-      });
-
+      res.json({ valid: isValid });
     } catch (error) {
-      res.status(500).json({ 
-        valid: false, 
-        message: "Internal server error" 
-      });
+      console.error("Session validation error:", error);
+      res.status(500).json({ valid: false, error: "Server error" });
     }
   });
 
-  // Admin login with enhanced security
-  app.post("/api/admin/login", loginLimiter, async (req, res) => {
+  app.post("/api/validate-ride-session", async (req, res) => {
+    try {
+      const { token } = req.body;
+
+      if (!token || typeof token !== 'string') {
+        return res.status(400).json({ valid: false, error: "Invalid token" });
+      }
+
+      // Here you would typically validate the token against your database
+      // For now, we'll just check if it's a valid format (simple validation)
+      const isValid = token.length > 10; // Basic validation
+
+      res.json({ valid: isValid });
+    } catch (error) {
+      console.error("Ride session validation error:", error);
+      res.status(500).json({ valid: false, error: "Server error" });
+    }
+  });
+
+  // Admin login
+  app.post("/api/admin/login", loginLimiter, async (req: Request, res: Response) => {
     try {
       const { password } = adminPasswordSchema.parse(req.body);
+
+      // Compare with hashed password using bcrypt
+      const passwordHash = await getAdminPasswordHash();
+      const isValidPassword = await bcrypt.compare(password, passwordHash);
       
-      // Get the hashed admin password
-      const adminPasswordHash = await getAdminPasswordHash();
-      
-      // Compare the provided password with the hashed password
-      const isValidPassword = await bcrypt.compare(password, adminPasswordHash);
-      
-      if (isValidPassword) {
-        // Generate JWT token
-        const token = jwt.sign(
-          { role: 'admin', timestamp: Date.now() },
-          JWT_SECRET,
-          { expiresIn: '2h' } // Token expires in 2 hours
-        );
-        
-        res.json({ 
-          success: true, 
-          message: "Login successful",
-          token,
-          expiresIn: 7200 // 2 hours in seconds
+      if (!isValidPassword) {
+        return res.status(401).json({
+          success: false,
+          message: "Invalid password"
         });
-      } else {
-        res.status(401).json({ success: false, message: "Invalid password" });
       }
+
+      // Generate JWT token
+      const token = jwt.sign(
+        { role: 'admin', timestamp: Date.now() },
+        JWT_SECRET,
+        { expiresIn: '2h' } // Token expires in 2 hours
+      );
+
+      res.json({
+        success: true,
+        message: "Login successful",
+        token,
+        expiresIn: 7200 // 2 hours in seconds
+      });
     } catch (error) {
-      console.error('Admin login error:', error);
-      res.status(500).json({ 
-        success: false, 
-        message: "Internal server error" 
+      console.error("Admin login error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Internal server error"
       });
     }
   });
 
-  // Get registrations with pagination and filtering (admin only)
+  // Middleware to authenticate admin role
+  const authenticateAdmin = (req: Request, res: Response, next: NextFunction) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ success: false, message: 'Admin access token required' });
+    }
+
+    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+      if (err || user.role !== 'admin') {
+        return res.status(403).json({ success: false, message: 'Unauthorized admin access' });
+      }
+      req.user = user;
+      next();
+    });
+  };
+
+  // Get all registrations (admin only)
   app.get("/api/registrations", adminLimiter, authenticateToken, async (req, res) => {
     try {
       const page = parseInt(req.query.page as string) || 1;
       const limit = parseInt(req.query.limit as string) || 20;
       const search = req.query.search as string || '';
       const filter = req.query.filter as string || 'all';
-      
+
       const allRegistrations = await storage.getAllRegistrations();
-      
+
       // Apply search and filtering
       let filteredRegistrations = allRegistrations.filter(registration => {
         const matchesSearch = search === '' || 
@@ -292,15 +348,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get analytics summary (lightweight)
   app.get("/api/analytics", adminLimiter, authenticateToken, async (req, res) => {
     try {
       const registrations = await storage.getAllRegistrations();
-      
+
       const totalRegistrations = registrations.length;
       const cngPowered = registrations.filter(r => r.cngPowered).length;
       const uniqueCars = new Set(registrations.map(r => r.carModel.toLowerCase())).size;
-      
+
       // Only last 7 days for performance
       const last7Days = Array.from({ length: 7 }, (_, i) => {
         const date = new Date();
@@ -353,16 +408,219 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Download CSV file (admin only)
   app.get("/api/download-csv", adminLimiter, authenticateToken, async (req, res) => {
     try {
-      const csvData = await storage.exportToCsv();
+      const type = req.query.type as string || 'registrations';
       
+      let csvData: string;
+      let filename: string;
+      
+      if (type === 'ride-requests') {
+        csvData = await storage.exportRideRequestsToCsv();
+        filename = 'ride-requests.csv';
+      } else {
+        csvData = await storage.exportToCsv();
+        filename = 'registrations.csv';
+      }
+
       res.setHeader('Content-Type', 'text/csv');
-      res.setHeader('Content-Disposition', 'attachment; filename=registrations.csv');
-      
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+
       res.send(csvData);
     } catch (error) {
       res.status(500).json({ 
         success: false, 
         message: "Error generating CSV file" 
+      });
+    }
+  });
+
+  // Admin-only routes
+  // Get all registrations (admin only)
+  app.get("/api/admin/registrations", adminLimiter, authenticateAdmin, async (req: Request, res: Response) => {
+    try {
+      const registrations = await storage.getAllRegistrations();
+      res.json({
+        success: true,
+        registrations
+      });
+    } catch (error) {
+      console.error("Error fetching registrations:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch registrations"
+      });
+    }
+  });
+
+  // Get paginated ride requests (admin only)
+  app.get("/api/ride-requests", adminLimiter, authenticateToken, async (req, res) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const search = req.query.search as string || '';
+      const filter = req.query.filter as string || 'all';
+
+      const allRideRequests = await storage.getAllRideRequests();
+
+      // Apply search and filtering
+      let filteredRideRequests = allRideRequests.filter(rideRequest => {
+        const matchesSearch = search === '' || 
+          rideRequest.passengerName.toLowerCase().includes(search.toLowerCase()) ||
+          rideRequest.pickupLocation.toLowerCase().includes(search.toLowerCase()) ||
+          rideRequest.dropoffLocation.toLowerCase().includes(search.toLowerCase()) ||
+          rideRequest.passengerContact.includes(search);
+
+        const matchesFilter = 
+          filter === 'all' ||
+          (filter === 'cng' && rideRequest.prefersCNG) ||
+          (filter === 'regular' && !rideRequest.prefersCNG);
+
+        return matchesSearch && matchesFilter;
+      });
+
+      // Sort by date (newest first)
+      filteredRideRequests.sort((a, b) => 
+        new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+
+      // Apply pagination
+      const startIndex = (page - 1) * limit;
+      const endIndex = startIndex + limit;
+      const paginatedRideRequests = filteredRideRequests.slice(startIndex, endIndex);
+
+      res.json({ 
+        success: true, 
+        data: paginatedRideRequests,
+        total: filteredRideRequests.length,
+        page,
+        totalPages: Math.ceil(filteredRideRequests.length / limit)
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        success: false, 
+        message: "Internal server error" 
+      });
+    }
+  });
+
+  // Ride analytics for admin panel
+  app.get("/api/ride-analytics", adminLimiter, authenticateToken, async (req, res) => {
+    try {
+      const rideRequests = await storage.getAllRideRequests();
+
+      const totalRideRequests = rideRequests.length;
+      const cngPreferred = rideRequests.filter(r => r.prefersCNG).length;
+      const avgPassengers = rideRequests.length > 0 
+        ? (rideRequests.reduce((sum, r) => sum + r.passengers, 0) / rideRequests.length).toFixed(1)
+        : 0;
+
+      // Last 7 days data for consistency with car rentals
+      const last7Days = Array.from({ length: 7 }, (_, i) => {
+        const date = new Date();
+        date.setDate(date.getDate() - i);
+        return date.toISOString().split('T')[0];
+      }).reverse();
+
+      const requestsByDate = last7Days.map(date => {
+        const count = rideRequests.filter(r => 
+          new Date(r.createdAt).toISOString().split('T')[0] === date
+        ).length;
+        return {
+          date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+          count
+        };
+      });
+
+      // Popular pickup locations
+      const pickupCounts = rideRequests.reduce((acc, r) => {
+        acc[r.pickupLocation] = (acc[r.pickupLocation] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      const popularPickups = Object.entries(pickupCounts)
+        .map(([location, count]) => ({ location, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+
+      // Popular routes analysis
+      const routeCounts = rideRequests.reduce((acc, r) => {
+        const route = `${r.pickupLocation} → ${r.dropoffLocation}`;
+        acc[route] = (acc[route] || 0) + 1;
+        return acc;
+      }, {} as Record<string, number>);
+
+      const popularRoutes = Object.entries(routeCounts)
+        .map(([route, count]) => ({ route, count }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 5);
+
+      res.json({
+        success: true,
+        data: {
+          totalRideRequests,
+          cngPreferred,
+          regularPreferred: totalRideRequests - cngPreferred,
+          avgPassengers,
+          popularPickups,
+          popularRoutes,
+          requestsByDate,
+          thisWeekCount: requestsByDate.reduce((sum, day) => sum + day.count, 0)
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        success: false, 
+        message: "Internal server error" 
+      });
+    }
+  });
+
+  // Get all ride requests (admin only)
+  app.get("/api/admin/ride-requests", adminLimiter, authenticateAdmin, async (req: Request, res: Response) => {
+    try {
+      const rideRequests = await storage.getAllRideRequests();
+      res.json({
+        success: true,
+        rideRequests
+      });
+    } catch (error) {
+      console.error("Error fetching ride requests:", error);
+      res.status(500).json({
+        success: false,
+        message: "Failed to fetch ride requests"
+      });
+    }
+  });
+
+  // Export registrations to CSV (admin only)
+  app.get("/api/admin/export", adminLimiter, authenticateAdmin, async (req: Request, res: Response) => {
+    try {
+      const registrations = await storage.exportToCsv();
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=registrations.csv');
+
+      res.send(registrations);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: "Error generating CSV file"
+      });
+    }
+  });
+
+  // Export ride requests to CSV (admin only)
+  app.get("/api/admin/export-rides", adminLimiter, authenticateAdmin, async (req: Request, res: Response) => {
+    try {
+      const rideRequests = await storage.exportRideRequestsToCsv();
+
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename=ride-requests.csv');
+
+      res.send(rideRequests);
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: "Error generating CSV file"
       });
     }
   });

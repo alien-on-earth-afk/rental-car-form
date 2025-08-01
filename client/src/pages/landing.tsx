@@ -17,11 +17,6 @@ export default function Landing() {
               <h1 className="text-xl sm:text-2xl font-bold text-gray-900">CarConnect</h1>
             </div>
             <div className="flex items-center space-x-2 sm:space-x-4">
-              <Link href="/admin">
-                <Button variant="ghost" className="text-sm sm:text-base text-gray-600 hover:text-gray-900">
-                  Admin
-                </Button>
-              </Link>
             </div>
           </div>
         </div>
@@ -46,7 +41,7 @@ export default function Landing() {
                     <Link href="/rent">
                       <Button className="w-full flex items-center justify-center px-6 py-3 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700 sm:text-base md:py-4 md:text-lg md:px-10">
                         <Car className="mr-2 h-4 w-4 sm:h-5 sm:w-5" />
-                        Rent a Car
+                        Rent your Car
                       </Button>
                     </Link>
                   </div>
@@ -66,7 +61,7 @@ export default function Landing() {
       </div>
 
       {/* Hero Section */}
-      <div className="py-16 px-4 sm:px-6 lg:px-8">
+      <div className="py-0 px-4 sm:px-6 lg:px-8">
         <div className="max-w-4xl mx-auto text-center">
           <Badge className="mb-4 bg-blue-100 text-blue-800 border-blue-200">
             <Star className="h-3 w-3 mr-1" />
@@ -75,13 +70,11 @@ export default function Landing() {
 
           <h2 className="text-4xl md:text-6xl font-bold text-gray-900 mb-6">
             Your Perfect
-            <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text text-transparent"> Journey </span>
+            <span className="bg-gradient-to-r from-blue-600 to-indigo-600 bg-clip-text"> Journey </span>
             Awaits
           </h2>
 
           <p className="text-xl text-gray-600 mb-12 max-w-2xl mx-auto leading-relaxed">
-            Whether you need a car for your next adventure or want to earn by sharing your vehicle, 
-            we've got you covered with our trusted platform.
           </p>
 
           {/* Main Action Cards */}
@@ -122,7 +115,9 @@ export default function Landing() {
                 </Link>
               </CardContent>
             </Card>
+            
 
+            
             {/* Rent Card */}
             <Card className="group hover:shadow-2xl transition-all duration-300 transform hover:scale-105 bg-gradient-to-br from-blue-50 to-indigo-100 border-2 border-blue-200">
               <CardContent className="p-8 text-center">
@@ -147,7 +142,7 @@ export default function Landing() {
                   </li>
                   <li className="flex items-center">
                     <CheckCircle2 className="h-4 w-4 text-blue-600 mr-2" />
-                    Full insurance coverage
+                    Rent multiple cars
                   </li>
                 </ul>
 
@@ -184,7 +179,7 @@ export default function Landing() {
                 <Users className="h-6 w-6 text-green-600" />
               </div>
               <h4 className="font-semibold text-gray-900 mb-2">Community Driven</h4>
-              <p className="text-sm text-gray-600">Join thousands of satisfied users in our growing community.</p>
+              <p className="text-sm text-gray-600">Join many of satisfied users in our growing community.</p>
             </div>
           </div>
 
@@ -192,16 +187,12 @@ export default function Landing() {
           <div className="mt-16 bg-white rounded-2xl shadow-xl p-8">
             <div className="grid md:grid-cols-3 gap-8 text-center">
               <div>
-                <div className="text-3xl font-bold text-blue-600 mb-2">1000+</div>
+                <div className="text-3xl font-bold text-blue-600 mb-2">X</div>
                 <div className="text-gray-600">Happy Customers</div>
               </div>
               <div>
-                <div className="text-3xl font-bold text-green-600 mb-2">500+</div>
+                <div className="text-3xl font-bold text-green-600 mb-2">X</div>
                 <div className="text-gray-600">Cars Available</div>
-              </div>
-              <div>
-                <div className="text-3xl font-bold text-purple-600 mb-2">50+</div>
-                <div className="text-gray-600">Cities Covered</div>
               </div>
             </div>
           </div>

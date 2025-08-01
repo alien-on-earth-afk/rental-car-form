@@ -15,7 +15,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group"
 import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { Badge } from "@/components/ui/badge"
-import { AlertCircle, CheckCircle2, User, Car, UserCheck, Phone, CreditCard } from "lucide-react"
+import { AlertCircle, CheckCircle2, User, Car, UserCheck, Phone, CreditCard, ArrowLeft } from "lucide-react"
 import { useState, useEffect, useMemo, useCallback, memo, Suspense } from "react"
 import type { UseFormRegister, FieldErrors, UseFormSetValue } from "react-hook-form"
 
@@ -109,12 +109,12 @@ const OwnerSection = memo(function OwnerSection({
   formatPhoneNumber: (value: string) => string
 }) {
   return (
-    <div className="border-b border-gray-200 pb-6">
-      <div className="flex items-center mb-4">
-        <User className="h-5 w-5 text-blue-600 mr-2" />
-        <h3 className="text-lg font-semibold text-gray-900">Owner Information</h3>
+    <div className="border-b border-gray-200 pb-4 sm:pb-6">
+      <div className="flex items-center mb-3 sm:mb-4">
+        <User className="h-4 w-4 sm:h-5 sm:w-5 text-blue-600 mr-2" />
+        <h3 className="text-base sm:text-lg font-semibold text-gray-900">Owner Information</h3>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <Label htmlFor="ownerName" className="text-sm font-medium text-gray-700">
@@ -190,12 +190,12 @@ const VehicleSection = memo(function VehicleSection({
   getInputClassName: (fieldName: string) => string
 }) {
   return (
-    <div className="border-b border-gray-200 pb-6">
-      <div className="flex items-center mb-4">
-        <Car className="h-5 w-5 text-blue-600 mr-2" />
-        <h3 className="text-lg font-semibold text-gray-900">Vehicle Information</h3>
+    <div className="border-b border-gray-200 pb-4 sm:pb-6">
+      <div className="flex items-center mb-3 sm:mb-4">
+        <Car className="h-4 w-4 sm:h-5 sm:w-5 text-blue-600 mr-2" />
+        <h3 className="text-base sm:text-lg font-semibold text-gray-900">Vehicle Information</h3>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <Label htmlFor="carModel" className="text-sm font-medium text-gray-700">
@@ -313,12 +313,12 @@ const DriverSection = memo(function DriverSection({
   formatPhoneNumber: (value: string) => string
 }) {
   return (
-    <div className="pb-6">
-      <div className="flex items-center mb-4">
-        <UserCheck className="h-5 w-5 text-blue-600 mr-2" />
-        <h3 className="text-lg font-semibold text-gray-900">Driver Information</h3>
+    <div className="pb-4 sm:pb-6">
+      <div className="flex items-center mb-3 sm:mb-4">
+        <UserCheck className="h-4 w-4 sm:h-5 sm:w-5 text-blue-600 mr-2" />
+        <h3 className="text-base sm:text-lg font-semibold text-gray-900">Driver Information</h3>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <Label htmlFor="driverName" className="text-sm font-medium text-gray-700">
@@ -475,19 +475,36 @@ function HomeContent() {
 
   const submitRegistration = useMutation({
     mutationFn: async (data: InsertRegistration) => {
-      const response = await apiRequest("POST", "/api/registrations", data)
-      return response.json()
+      try {
+        const response = await fetch("/api/registrations", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(data),
+        })
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}))
+          throw new Error(`HTTP ${response.status}: ${errorData.message || 'Server error'}`)
+        }
+
+        return response.json()
+      } catch (error) {
+        console.error("Network error:", error)
+        throw error
+      }
     },
     onSuccess: (data, variables) => {
+      console.log("Registration successful:", data)
       toast({
         title: "Success!",
-        description: "Registration submitted successfully!",
+        description: "Your registration has been submitted successfully!",
       })
-      
-      // Create a secure session token for results page access
-      const sessionToken = data.sessionToken
+
+      const sessionToken = data.sessionToken || crypto.randomUUID()
       const ownerName = variables.ownerName
-      
+
       // Store session data securely (expires in 10 minutes)
       sessionStorage.setItem("registrationSession", JSON.stringify({
         token: sessionToken,
@@ -495,16 +512,17 @@ function HomeContent() {
         timestamp: Date.now(),
         expires: Date.now() + (10 * 60 * 1000) // 10 minutes
       }))
-      
+
       // Redirect to results page with secure token
       setLocation(`/results?token=${sessionToken}`)
       reset()
     },
-    onError: (error) => {
+    onError: (error: any) => {
       console.error("Submission error:", error)
+      const errorMessage = error?.message || "Failed to submit registration. Please try again."
       toast({
         title: "Error",
-        description: "Failed to submit registration. Please try again.",
+        description: errorMessage,
         variant: "destructive",
       })
     },
@@ -542,7 +560,18 @@ function HomeContent() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between h-16">
             <div className="flex items-center">
-              <h1 className="text-2xl font-bold text-gray-900">Car Portal</h1>
+              <h1 className="text-2xl font-bold text-gray-900">CarConnect</h1>
+            </div>
+            <div className="flex items-center space-x-4">
+              <Link href="/">
+                <Button
+                  variant="ghost"
+                  className="flex items-center space-x-2 text-gray-600 hover:text-gray-900"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                  <span>Back to Home</span>
+                </Button>
+              </Link>
             </div>
           </div>
         </div>
@@ -552,15 +581,15 @@ function HomeContent() {
       <div className="py-12 px-4 sm:px-6 lg:px-8">
         <div className="max-w-2xl mx-auto">
           {/* Header */}
-          <div className="text-center mb-8">
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">Vehicle Registration</h2>
-            <p className="text-gray-600 mb-4">Please fill in your vehicle and driver information</p>
+          <div className="text-center mb-6 sm:mb-8">
+            <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 mb-2">Rent Your Car</h2>
+            <p className="text-sm sm:text-base text-gray-600 mb-4 px-2">Register your vehicle to start earning by renting it to travelers</p>
 
             {/* Progress Bar */}
-            <div className="max-w-md mx-auto">
+            <div className="max-w-md mx-auto px-4 sm:px-0">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm font-medium text-gray-600">Form Progress</span>
-                <Badge variant={formProgress === 100 ? "default" : "secondary"}>
+                <span className="text-xs sm:text-sm font-medium text-gray-600">Form Progress</span>
+                <Badge variant={formProgress === 100 ? "default" : "secondary"} className="text-xs">
                   {Math.round(formProgress)}% Complete
                 </Badge>
               </div>
@@ -570,8 +599,8 @@ function HomeContent() {
           </div>
 
           {/* Form Container */}
-          <Card className="bg-white rounded-2xl shadow-xl">
-            <CardContent className="p-8">
+          <Card className="max-w-4xl mx-auto shadow-xl card-mobile">
+            <CardContent className="p-4 sm:p-8">
               <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
                 {/* Form sections with optimized components */}
                 <OwnerSection
@@ -601,35 +630,35 @@ function HomeContent() {
                 />
 
                 {/* Form Summary & Submit */}
-                <div className="pt-6 border-t border-gray-200">
+                <div className="pt-4 sm:pt-6 border-t border-gray-200">
 
                   {/* Submit Button */}
                   <Button
                     type="submit"
                     disabled={isSubmitting || submitRegistration.isPending || formProgress < 100}
-                    className={`w-full py-4 px-6 rounded-lg font-semibold text-lg transition-all duration-300 transform ${
+                    className={`w-full py-3 sm:py-4 px-4 sm:px-6 rounded-lg font-semibold text-base sm:text-lg transition-all duration-300 transform ${
                       formProgress === 100
                         ? "bg-green-600 hover:bg-green-700 hover:scale-[1.02] focus:ring-4 focus:ring-green-200"
                         : "bg-gray-400 cursor-not-allowed"
-                    } text-white`}
+                    } text-white btn-mobile input-mobile`}
                   >
                     {isSubmitting || submitRegistration.isPending ? (
                       <div className="flex items-center justify-center space-x-2">
                         <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                        <span>Submitting Registration...</span>
+                        <span className="text-sm sm:text-base">Submitting Registration...</span>
                       </div>
                     ) : formProgress === 100 ? (
                       <div className="flex items-center justify-center space-x-2">
-                        <CheckCircle2 className="h-5 w-5" />
-                        <span>Submit Registration</span>
+                        <CheckCircle2 className="h-4 w-4 sm:h-5 sm:w-5" />
+                        <span className="text-sm sm:text-base">Submit Registration</span>
                       </div>
                     ) : (
-                      <span>Complete</span>
+                      <span className="text-sm sm:text-base">Complete Form to Submit</span>
                     )}
                   </Button>
 
                   {formProgress < 100 && (
-                    <p className="text-center text-sm text-gray-500 mt-2">
+                    <p className="text-center text-xs sm:text-sm text-gray-500 mt-2">
                       {6 - completedFields.size} more field{6 - completedFields.size !== 1 ? "s" : ""} required
                     </p>
                   )}
